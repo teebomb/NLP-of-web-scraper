@@ -1,0 +1,478 @@
+---
+title: "Natural Language Processing and Analysis"
+author: "Tommy Brant"
+date: "January 25, 2019"
+output: html_document
+---
+
+
+## Executive Summary
+There are three files that contain English words to make up the corpora. Sources are from Twitter, News, and Blogs. These files will be analyzed to establish a corpora based on these samples. Word distribution will be analyzed to uncover insights.
+Additionally, we will exploring modleing to predict the next word in a phrase or sentence. 
+
+```{r warning=FALSE, message=FALSE, results='hide'}
+
+library(tm)
+library(quanteda)
+library(stringi)
+library(dplyr)
+library(RWeka)
+library(ggplot2)
+library(wordcloud)
+library(markovchain)
+library(knitr)
+library(readtext)
+library(slam)
+library(forcats)
+
+```
+
+
+##Loading the Data
+The text data is from a corpus called HC Corpora (www.corpora.heliohost.org). See the readme file at http://www.corpora.heliohost.org/aboutcorpus.html for details on the corpora. The data are are comprised of text collected from publicly available sources by a web crawler. There are three sources - Twitter, News, and Blogs. We load the datasets below.
+
+```{r warning=FALSE}
+file1 = "en_US.twitter.txt"
+file2 = "en_US.news.txt"
+file3 = "en_US.blogs.txt"
+
+#Note, include encoding so it can interpret apastrophe's and single quotes appropriately 
+if (!exists("df_twitt")) df_twitt<-readLines("en_US.twitter.txt", encoding = "UTF-8")
+if (!exists("df_news")) df_news<-readLines("en_US.news.txt", encoding = "UTF-8")
+if (!exists("df_blogs")) df_blogs<-readLines("en_US.blogs.txt", encoding = "UTF-8")
+if (!exists("df_total")) df_total<-c(df_twitt, df_news, df_blogs)
+
+
+```
+
+##Exploratory Analysis
+
+
+Let's look at contents, general file information and number of entries. Then we will probe further to find the number of words and sentences.
+Firstly, we preview the beginning and end of each source's contents.
+
+```{r}
+#Contents by source
+
+#Twitter first and last entries
+head(df_twitt)
+tail(df_twitt)
+
+```
+
+```{r}
+#News first and last entries
+head(df_news,3)
+tail(df_news,3)
+
+```
+
+```{r}
+#Blogs first and last enties
+head(df_blogs,3)
+tail(df_blogs,3)
+
+```
+
+
+
+Preview the file size and volume of entries within.
+
+```{r}
+# File Size and length entries, in Bytes
+
+filesize_Bytes<-c(file.info(file1)$size, file.info(file2)$size, file.info(file3)$size)
+
+# Number of entries or documents
+N_entries<-c(length(df_twitt), length(df_news), length(df_blogs))
+
+source_info<-rbind(filesize_Bytes, N_entries)
+colnames(source_info)<-c("Twitter", "News", "Blogs")
+kable(t(source_info))
+
+```
+
+ 
+Next, let's organize the data by sentence and word count. 
+Thanks to the `r "stringi"` package for making this process simple.
+
+```{r}
+
+#requires stringi package 
+
+#DETERMINE SENTENCE BOUNDARIES. RETURNS # OF TEXT BOUNDARIES(char, word, line, OR sentence)
+
+#number of sentence boundaries per entry/document
+sentBound_blogs<-stri_count_boundaries(df_blogs,type="sentence")
+sentBound_news<-stri_count_boundaries(df_news,type="sentence")
+sentBound_twitt<-stri_count_boundaries(df_twitt,type="sentence")
+
+#number of words per entry/document
+numWords_blogs<-stri_count_words(df_blogs)
+numWords_news<-stri_count_words(df_news)
+numWords_twitt<-stri_count_words(df_twitt)
+
+# num Words per source
+wordsTot<-c(sum(numWords_twitt), sum(numWords_news), sum(numWords_blogs))
+
+# num sentences per source
+sentTot<-c(sum(sentBound_twitt), sum(sentBound_news), sum(sentBound_blogs))
+
+# num words per sentence on avg
+words_per_sent<-wordsTot/sentTot
+
+source_info<-rbind(source_info, wordsTot, sentTot, words_per_sent)
+source_info
+
+#make easier to read
+source_info[1:4,]<-format(source_info[1:4,], scientific = FALSE)
+source_info[5,]<-format(round(as.numeric(source_info[5,]), 2), scientific = FALSE)
+
+#--IS THIS NEEDED?
+kable(t(source_info[1:2,]))
+
+```
+
+
+Some conclusions:
+ - `r colnames(source_info)[which(source_info[1,] == max(as.numeric(source_info[1,])))]` is the source with the largest file size at  `max(as.numeric(source_info[1,]))` Bytes.
+ - `r colnames(source_info)[which(source_info[2,] == max(as.numeric(source_info[2,])))]` is the source with most entries at `r max(as.numeric(source_info[2,]))` entries.
+ - `r colnames(source_info)[which(source_info[3,] == max(as.numeric(source_info[3,])))]` is the source with the most words at `r max(as.numeric(source_info[3,]))` words.
+ - `r colnames(source_info)[which(source_info[4,] == max(as.numeric(source_info[4,])))]` is the source with the most sentences at `r max(source_info[4,])` sentences.
+ - `r colnames(source_info)[which(source_info[5,] == max(as.numeric(source_info[5,])))]` is the source with the most words per sentence on average at `r max(as.numeric(source_info[5,]))` words per sentence on average.
+ - The blogs and news data sets are the largest in size, although Twitter has the most entries. Given the text limit on Twitter, this is consistent with expectations.
+ 
+
+## Sampling the Data
+
+How we define our corpus will have an impact on the results. For example, we have the option of combining all the data into a single data set before defining the corpus. For a predictive text model, this would introduce bias towards the source(s) with more words per sentence and more sentences. Alternatively, a more precise model could be created if we define a corpus per data set, and use a predictive model with the three corpora. 
+
+Given the size of the data sets, we will sample of each data set will be taken, then combine the samples to define the corpus.
+
+We will track the source of the text in our explorations.
+
+
+```{r}
+library(dplyr)
+
+#----tracking sample source is not necessary at this point since we are done with explo word analysis
+set.seed(8465) #for sampling
+#blogs
+n<-0.05 #sampling volume # 5%
+
+
+
+#blog
+if (!exists("blogs.sample")) blogs.sample<-df_blogs[sample(length(df_blogs),length(df_blogs)*n)] #random sampling
+if (!exists("blogs.sample.df")) blogs.sample.df<-data.frame(text=blogs.sample,source=rep("blogs",length(blogs.sample))) #~15s
+
+
+#news
+if (!exists("news.sample")) news.sample<-df_news[sample(length(df_news),length(df_news)*n)]
+if (!exists("news.sample.df")) news.sample.df<-data.frame(text=news.sample,source=rep("news",length(news.sample)))
+
+#twitter
+
+if (!exists("twitt.sample")) twitt.sample<-df_twitt[sample(length(df_twitt),length(df_twitt)*n)]
+if (!exists("twitt.sample.df")) twitt.sample.df<-data.frame(text=twitt.sample,source=rep("twitt",length(twitt.sample)))
+
+
+#combine
+if (!exists("textTotSamp")) textTotSamp<-rbind(blogs.sample.df,news.sample.df,twitt.sample.df)
+textTotSamp$text<-as.character(textTotSamp$text)
+
+```
+
+
+Visualize corpus structure
+```{r}
+#-----Visualize corpus structure by document
+summary(corpus(textTotSamp$text), 5)
+
+```
+
+
+Each entry from our text source is treated as a document. The documents will be split into sentences prior to vector corpus construction. This will be helpful when we identify unigrams, bi grams, and tri grams. Worth noting that we could split the documents into words, but the N-gram analysis would not factor in complete sentences, and the memory used would be much greater.
+
+```{r}
+library(quanteda)
+library(tm)
+
+#-----break up documents into sentences
+if (!exists("text.by.sent.1")) text.by.sent.1<-unlist(tokens(textTotSamp$text,what="sentence"))
+
+#sentences
+if (!exists("text.corpus.1")) text.corpus.1<-VCorpus(VectorSource(text.by.sent.1)) 
+
+```
+
+
+##Memory Cleanup (Under Construction)
+Natural language proessing requires an abundance of processing power for a moderate sample. 
+
+```{r}
+#--------CLEAN MEMORY
+#rm(list=c("text.corpus1","textClean", "textCorpus","text.corpus","clean_split", "clean.Corpus","bar_bi", "bar_bi_flip","bar_tri", "bar_tri_flip", "df1.1", "df1","df1.2", "df1.3", "df2.1word", "df3.1", "sample_blogs", "sample_news","sample_twitt"))
+
+#rm(list=c("text.by.sent", "text.by.sent.2", "text.by.sent.test", "text.by.sent.test1.1", "corpusQ", "corpusQ_sumry", "freq_quad")
+
+```
+
+##Cleaning the Corpus
+Next, we work to clean the corpus for token analysis.
+
+There are some packages that are commonly used, such as Quanteda and tm. Will will use the tm_map function from tm package.
+
+To do: Cite source of profanities
+Consdier citing source of functions
+
+Tokenization will be performed on the corpus prior to ultimately creating the term document matrix. This includes removing punctuations, URLs, leading/lagging spaces, emojis, whitespace, and profanities. We could also remove stopwords, but since we want to build a model to predict text, we will leverage the stop words. 
+
+The list of profane words can be found at  https://raw.githubusercontent.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/master/en
+
+
+
+```{r}
+#---TM_MAP()
+
+
+#-------------- DEFINE PROFNAITIES
+if (!exists("prof")) prof<-readLines("Data/PROFANITIES/prof.txt")
+if (!exists("prof_clean")) prof_clean<-tolower(prof)
+
+#-------functions for tm_map
+remove_Num_Punct<- function(x){
+    gsub("[^[:alpha:][:space:]]*","",x)
+}
+
+# 1.1 -Remove spaces
+remove_Spaces_LeadTail<-function(x){
+    gsub("^\\s+|\\s+$", "", x)
+}
+
+# 2 -Remove URL prefixes
+remove_URL <- function(x){
+    gsub("http[^[:space:]]*","",x)
+}
+
+
+#----------replace non-vonc bytes w/ hexcode strings
+if (!exists("vector.corpus.1")) {
+  vector.corpus.1<-tm_map(text.corpus.1, content_transformer(function(x) iconv(enc2utf8(x), sub = "byte")))  
+  #alternate------- for replacing graphics with spaces - usableText=str_replace_all(tweets$text,"[^[:graph:]]", " ")
+  vector.corpus.1<- tm_map(vector.corpus.1,content_transformer(remove_URL))
+  vector.corpus.1<- tm_map(vector.corpus.1,removeNumbers)
+  vector.corpus.1<- tm_map(vector.corpus.1,removePunctuation)
+  vector.corpus.1<- tm_map(vector.corpus.1,stripWhitespace)
+  vector.corpus.1<- tm_map(vector.corpus.1,content_transformer(tolower))
+  vector.corpus.1<- tm_map(vector.corpus.1,removeWords,prof_clean)  #this takes the longest ~30s @ 1% sample
+}
+
+
+
+```
+
+Now that we have vector corpus in place, let's start to visualize the word distribution. 
+
+##Wordcloud
+Basic wordcloud to qualitatively visualize frequency of words 
+
+```{r}
+#library(wordcloud)
+
+if (!exists("wc")) wc<-wordcloud(vector.corpus.1, scale=c(5,0.5), max.words=100, random.order=FALSE, rot.per=0.4, use.r.layout=FALSE, colors=brewer.pal(8, "Dark2")) 
+
+wc
+```
+
+As expected, the most common words are stop words from the English dictionary.
+
+Given we desire to make a model for predictive text, we will not remove stop words.
+Let's look at word frequency next. The data will be organized into a Term Document Matrix to look at word frequency.
+
+
+Term Document Matrix will be created for N-gram analysis.
+```{r}
+#library(RWeka)
+#library(tm)
+#install.packages("slam")
+#library(slam)  #for row_sums
+
+
+#---UNIGRAM TDM
+
+if (!exists("tdm_uni")) tdm_uni<-TermDocumentMatrix(vector.corpus.1, control = list(wordLengths=c(1,Inf), tokenize =function (x) NGramTokenizer(x, Weka_control(min=1, max = 1))))
+
+
+#------------------BI GRAM TDM
+#takes ~35s
+if (!exists("tdm_bi")) tdm_bi<-TermDocumentMatrix(vector.corpus.1, control = list(wordLengths=c(1,Inf), tokenize =function (x) NGramTokenizer(x, Weka_control(min=2, max = 2)))) 
+
+#nrow(tdm_bi) 
+
+
+#------------TRI GRAM TDM
+
+if (!exists("tdm_tri")) tdm_tri<-TermDocumentMatrix(vector.corpus.1, control = list(wordLengths=c(1,Inf), tokenize =function (x) NGramTokenizer(x, Weka_control(min=3, max = 3)))) 
+
+#nrow(tdm_tri)
+
+#---------------QUAD GRAM TDM
+#------(SIZE ANOMALY?)
+
+if (!exists("tdm_quad")) tdm_quad<-TermDocumentMatrix(vector.corpus.1, control = list(wordLengths=c(1,Inf), tokenize =function (x) NGramTokenizer(x, Weka_control(min=4, max = 4)))) 
+
+#nrow(tdm_quad) 
+
+
+```
+
+Now that the TDMs are constructed, we leverage helper functions to show frequency by N-gram.
+
+```{r}
+#library(RWeka)
+#library(tm)
+#install.packages("slam")
+#library(slam)  #for row_sums
+#------OPTION 2, OKAY MEMORY ALLOCATION
+#-------------unigram freq opt 2, do sums outside of as.matrix call, then cbind
+
+
+#dim(tdm_uni) #44568 x 62652 (why so big?) dumb sparse matrix
+
+unigram_frequency2 <- function(tdm_){
+    
+    #---row_sums from slam pkg.
+    #---- I think na.rm=TRUE is necess due to tokens coercion
+    token_sums <- (row_sums(tdm_, na.rm=TRUE)) # total freq #getting error about sorting
+    token.sums.df<- data.frame(cbind(names(token_sums), token_sums),
+                           stringsAsFactors = FALSE)
+    names(token.sums.df)<-c("token","freq")
+    token.sums.df$freq <- as.numeric(token.sums.df$freq)
+    #sort by frequency
+    token.sums.df<-token.sums.df[order(token.sums.df$freq, decreasing=TRUE),]
+    token.sums.df$token <- as.factor(token.sums.df$token)
+    #sort levels so plot looks good
+    token.sums.df$token<-factor(token.sums.df$token, levels=token.sums.df$token[order(token.sums.df$freq)])
+
+    
+    return(token.sums.df) 
+}
+
+if (!exists("freq_uni1.2")) freq_uni1.2<-unigram_frequency2(tdm_uni) 
+if (!exists("freq_bi1.2")) freq_bi1.2<-unigram_frequency2(tdm_bi) 
+if (!exists("freq_tri1.2")) freq_tri1.2<-unigram_frequency2(tdm_tri) 
+if (!exists("freq_quad1.2")) freq_quad1.2<-unigram_frequency2(tdm_quad) 
+
+
+```
+
+
+#Token Frequency
+Let's view the tokens based on frequency.
+
+```{r}
+#frequency plot in bar plot format -- still mind this is news sample only
+#has no fill
+#library(ggplot2)
+#library(dplyr)
+#library(forcats)
+
+#head(freq_uni)
+#------------------------GENERAL TOKENS PLOT
+#----- HOW IS THIS DIFF THAN UNIGRAM? - COLOR AND VIEWING
+#----SHOWING THIS IS SHOWING EXPLORATORY ANALYSIS(NOT TERRIBLE)
+
+#
+
+if (!exists("gen_plot")) gen_plot<-ggplot(filter(freq_uni1.2, freq>1)[1:200,],aes(x=token,y=freq))+  #filter freq >1
+        geom_bar(stat="identity", width=1, fill="green3",color="black")+ # fill="steelblue2")+
+        geom_bar(stat="identity", width=1, fill="gray72",color="black")+ # fill="steelblue2")+
+        ylab("Count")+
+        xlab("Token")+
+        ggtitle("UNIGRAM FREQUENCY") +
+        theme(axis.text.x=element_blank(),
+              axis.ticks.x=element_blank())
+
+gen_plot
+
+
+```
+
+#N-gram Visualizations
+
+Unigram distribution
+```{r}
+#-----------------------unigram plot
+library(ggplot2)
+library(dplyr)
+library(forcats)
+
+
+if (!exists("bar_plot1")) bar_plot1<-ggplot(filter(freq_uni1.2, freq>1)[1:40,],aes(x=token,y=freq))+  
+        geom_bar(stat="identity", fill="steelblue2", color="grey18") +#  
+        coord_flip()+
+        ylab("Count")+xlab("Token")+
+        ggtitle("UNIGRAM FREQUENCY") +
+        theme(axis.text.y = element_text(size=8)) + 
+        scale_y_continuous(expand=c(0,0)) #removes space
+bar_plot1 
+
+
+```
+
+
+Bi-Gram distribution
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(forcats)
+
+
+#-------bi gram plot
+if (!exists("bar_plot2")) bar_plot2<-ggplot(filter(freq_bi1.2, freq>1)[1:30,],aes(x=token,y=freq), fill="steelblue")+
+#bar_plot1<-ggplot(freq_uni,aes(x=token,y=freq,fill=sw))+
+        geom_bar(stat="identity", fill="steelblue2", color="grey18") +# 
+        coord_flip()+
+        ylab("frequency")+xlab("Token")+
+        ggtitle("BI-GRAM FREQUENCY") + 
+        theme(plot.title = element_text(lineheight=.7, face="bold"))+
+        theme(legend.title=element_blank())
+        
+
+bar_plot2 
+```
+
+
+Tri-Gram distribution
+
+```{r}
+
+#------tri gram plot
+if (!exists("bar_plot3")) bar_plot3<-ggplot(filter(freq_tri1.2, freq>1)[1:30,],aes(x=token,y=freq))+
+#bar_plot1<-ggplot(freq_uni,aes(x=token,y=freq,fill=sw))+
+        geom_bar(stat="identity", fill="steelblue2", color="grey18") +# 
+        coord_flip()+
+        ylab("frequency")+xlab("Token")+
+        ggtitle("TRIGRAM FREQUENCY") + 
+        theme(plot.title = element_text(lineheight=.7, face="bold"))+
+        theme(legend.title=element_blank())
+        
+
+bar_plot3 
+
+```
+
+
+
+#Observations and Next Steps
+Now that we have some idea as to word distribution. We can use N-grams to predict the next word.
+A number of machine learning algorithms could be applied for this(including random forest), but we anticipate Markov Chain modeling may prove to be an efficient way to predict text.
+
+We will next explore constructing the Markov Chain model, and validating it's use.
+After a model has been created, we will explore way upon which it can be packaged
+
+
+
+
